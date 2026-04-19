@@ -36,7 +36,7 @@ async function retryWithBackoff(fn, options = {}) {
       }
 
       if (onRetry) {
-        onRetry(error, attempt);
+        await Promise.resolve(onRetry(error, attempt));
       }
 
       console.log(`Attempt ${attempt} failed: ${error.message}. Retrying in ${delay}ms...`);
