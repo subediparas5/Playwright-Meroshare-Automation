@@ -1,9 +1,9 @@
 name: MeroShare IPO Automation
 
 on:
+  # Run daily at 9:00 AM Nepal Time (UTC+5:45) = 3:15 AM UTC
   schedule:
-    - cron: "0 9 * * 1-5"
-      timezone: Asia/Kathmandu
+    - cron: '15 3 * * *'  # 9:00 AM NPT (Nepal Time)
   
   # Allow manual triggering for testing
   workflow_dispatch:
