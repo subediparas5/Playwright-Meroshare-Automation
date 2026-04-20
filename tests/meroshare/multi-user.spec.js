@@ -1,4 +1,6 @@
 const { test } = require('@playwright/test');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 const {
   performLogin,
@@ -14,15 +16,66 @@ const {
   checkApplicationStatus,
   initBot,
   sendMessage,
-  notifyIPOStatus,
   notifyError,
-  notifyIPONotFound,
-  notifyIPOOpenForReview,
   navigateWithRetry,
   waitForElementWithRetry,
   retryWithBackoff,
 } = require('./helpers');
 const { users, telegram } = require('../../users.config');
+
+/** Last run's failures (by Meroshare username). Kept outside `test-results/` so Playwright does not wipe it before retry runs. */
+const FAILED_USERS_FILE = path.join(__dirname, '..', '..', 'meroshare-last-failures.json');
+
+function loadFailedUsernames() {
+  try {
+    const raw = fs.readFileSync(FAILED_USERS_FILE, 'utf8');
+    const data = JSON.parse(raw);
+    return Array.isArray(data.failedUsernames) ? data.failedUsernames : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveFailedUsernames(failedUsernames) {
+  const dir = path.dirname(FAILED_USERS_FILE);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    FAILED_USERS_FILE,
+    JSON.stringify(
+      {
+        failedUsernames,
+        updatedAt: new Date().toISOString(),
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+}
+
+/** @param {object[]} allUsers */
+function getUsersToProcess(allUsers) {
+  const failedUsernames = loadFailedUsernames();
+  if (failedUsernames.length === 0) {
+    console.log(
+      'No meroshare-last-failures.json on record — nothing to retry.'
+    );
+    return { users: [], mode: 'retry-empty' };
+  }
+  const filtered = allUsers.filter((u) => u.username && failedUsernames.includes(u.username));
+  if (filtered.length === 0) {
+    console.log(
+      'Saved failures do not match any configured users — nothing to retry.'
+    );
+    return { users: [], mode: 'retry-nomatch' };
+  }
+  console.log(
+    `Retrying ${filtered.length} failed user(s): ${filtered
+      .map((u) => u.name || u.username)
+      .join(', ')}`
+  );
+  return { users: filtered, mode: 'retry' };
+}
 
 /** Max wall-clock per user so one stuck session cannot consume the whole test run. */
 const USER_SLOT_MS = 180000;
@@ -47,11 +100,6 @@ async function withPerUserBudget(ms, fn) {
 }
 
 test.describe('MeroShare Multi-User IPO Automation', () => {
-  test.setTimeout(
-    USER_SLOT_MS * Math.max(1, Array.isArray(users) ? users.length : 1) +
-      SUMMARY_BUFFER_MS
-  );
-
   test('should check for IPO and auto-apply for all users', async ({ browser }) => {
     const telegramToken = telegram.token;
     const telegramChatId = telegram.chatId;
@@ -74,8 +122,21 @@ test.describe('MeroShare Multi-User IPO Automation', () => {
       }
       return;
     }
-    
-    console.log(`Found ${users.length} valid user(s) to process`);
+
+    const { users: usersToProcess, mode } = getUsersToProcess(users);
+    if (usersToProcess.length === 0) {
+      return;
+    }
+
+    test.setTimeout(
+      USER_SLOT_MS * Math.max(1, usersToProcess.length) + SUMMARY_BUFFER_MS
+    );
+
+    console.log(
+      mode === 'full'
+        ? `Found ${usersToProcess.length} valid user(s) to process`
+        : `Processing ${usersToProcess.length} user(s) (retry failed only)`
+    );
     
     // Track results for all users
     const results = [];
@@ -84,11 +145,11 @@ test.describe('MeroShare Multi-User IPO Automation', () => {
     let cachedVerification = null;
     
     // Process each user sequentially
-    for (let i = 0; i < users.length; i++) {
-      const user = users[i];
+    for (let i = 0; i < usersToProcess.length; i++) {
+      const user = usersToProcess[i];
       const userLabel = user.name || `User ${i + 1}`;
       
-      console.log(`\n========== Processing ${userLabel} (${i + 1}/${users.length}) ==========`);
+      console.log(`\n========== Processing ${userLabel} (${i + 1}/${usersToProcess.length}) ==========`);
       
       // Create a new context and page for each user (isolated sessions)
       const context = await browser.newContext();
@@ -96,6 +157,7 @@ test.describe('MeroShare Multi-User IPO Automation', () => {
       
       let userResult = {
         user: userLabel,
+        username: user.username,
         status: 'unknown',
         message: '',
         ipoDetails: null
@@ -322,12 +384,17 @@ test.describe('MeroShare Multi-User IPO Automation', () => {
       results.push(userResult);
       
       // Small delay between users
-      if (i < users.length - 1) {
+      if (i < usersToProcess.length - 1) {
         console.log('Waiting before next user...');
         await new Promise(resolve => setTimeout(resolve, 3000));
       }
     }
-    
+
+    const failedUsernames = results
+      .filter((r) => r.status === 'failed' && r.username)
+      .map((r) => r.username);
+    saveFailedUsernames(failedUsernames);
+
     // Send consolidated Telegram notification
     if (telegramChatId && telegramToken) {
       await sendMultiUserNotification(telegramChatId, results, cachedIpoDetails, sendMessage);
