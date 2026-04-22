@@ -24,34 +24,9 @@ const {
 } = require('./helpers');
 const { users, telegram } = require('../../users.config');
 
-/** Max wall-clock per user so one stuck session cannot consume the whole test run. */
-const USER_SLOT_MS = 180000;
-/** Extra time for Telegram summary and between-user delays. */
-const SUMMARY_BUFFER_MS = 120000;
-
-async function withPerUserBudget(ms, fn) {
-  let timeoutId;
-  try {
-    return await Promise.race([
-      fn(),
-      new Promise((_, reject) => {
-        timeoutId = setTimeout(
-          () => reject(new Error(`Per-user time budget exceeded (${ms}ms)`)),
-          ms
-        );
-      }),
-    ]);
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
-}
-
 test.describe('MeroShare Multi-User IPO Automation', () => {
-  test.setTimeout(
-    USER_SLOT_MS * Math.max(1, Array.isArray(users) ? users.length : 1) +
-      SUMMARY_BUFFER_MS
-  );
-
+  test.setTimeout(600000); // 10 minutes total for all users
+  
   test('should check for IPO and auto-apply for all users', async ({ browser }) => {
     const telegramToken = telegram.token;
     const telegramChatId = telegram.chatId;
@@ -100,11 +75,8 @@ test.describe('MeroShare Multi-User IPO Automation', () => {
         message: '',
         ipoDetails: null
       };
-
-      const perUserBudgetMs = USER_SLOT_MS;
-
+      
       try {
-        await withPerUserBudget(perUserBudgetMs, async () => {
         // Navigate to login page
         const loginUrl = 'https://meroshare.cdsc.com.np/#/login';
         await navigateWithRetry(page, loginUrl, {
@@ -234,7 +206,7 @@ test.describe('MeroShare Multi-User IPO Automation', () => {
             await goBackToMyASBA(page);
             await page.waitForTimeout(2000);
             
-            let applyInfoRefresh = await checkForApplyButton(page);
+            const applyInfoRefresh = await checkForApplyButton(page);
             if (!applyInfoRefresh.found) {
               throw new Error('Could not find Apply button after verification');
             }
@@ -277,10 +249,6 @@ test.describe('MeroShare Multi-User IPO Automation', () => {
                     try {
                       await goBackToMyASBA(page);
                       await page.waitForTimeout(2000);
-                      const refreshed = await checkForApplyButton(page);
-                      if (refreshed.found) {
-                        applyInfoRefresh = refreshed;
-                      }
                     } catch (e) {}
                   }
                 }
@@ -307,9 +275,7 @@ test.describe('MeroShare Multi-User IPO Automation', () => {
             }
           }
         }
-
-        });
-
+        
       } catch (error) {
         console.error(`${userLabel}: Error - ${error.message}`);
         userResult.status = 'failed';
