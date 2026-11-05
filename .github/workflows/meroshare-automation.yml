@@ -20,7 +20,7 @@ on:
 
 jobs:
   automate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # ubuntu-latest (26.04) is not supported by Playwright 1.57
     
     steps:
       - name: Checkout code
